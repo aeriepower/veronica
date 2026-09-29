@@ -6,8 +6,9 @@
 //   BASE_URL=http://localhost:8787 node test_clasificacion_nodos.mjs
 import assert from 'node:assert/strict'
 
-const BASE_URL = process.env.BASE_URL || 'https://jarvis-nucleo.hurtado-banda-david.workers.dev'
-const TOKEN = process.env.TOKEN || 'p93ZRdpNyqgGNq1RjdBpAdWWtBNzcpKAiG8IG9DBW0E'
+const BASE_URL = process.env.BASE_URL
+const TOKEN = process.env.TOKEN
+if (!BASE_URL || !TOKEN) { console.error('Faltan BASE_URL y TOKEN en el entorno'); process.exit(2) }
 const headers = { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }
 
 async function main() {

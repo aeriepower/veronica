@@ -3,6 +3,8 @@
 // contrato-mcp-veronica.md. Cada tool es una envoltura fina que llama al
 // mismo sub-app Hono que ya atiende el endpoint REST equivalente (via
 // app.request(), nunca logica duplicada ni acceso directo a D1).
+import { NODO_TIPOS, NODO_TIERS } from '../types/nodos'
+
 export type ToolDef = {
   name: string
   description: string
@@ -15,8 +17,6 @@ const CONFIANZAS = ['baja', 'media', 'alta'] as const
 const AUTORES = ['antigravity', 'claude', 'jarvis', 'david'] as const
 const ESTADOS_MEMORIA = ['activo', 'archivado'] as const
 const ETIQUETAS = ['candyla', 'atiendo', 'jarvis-app', 'arquitectura', 'autonomo', 'meta-sistema', 'idea', 'personal'] as const
-const NODO_TIPOS = ['software', 'hardware', 'credencial', 'pilar', 'servicio_externo', 'componente_codigo'] as const
-const NODO_TIERS = ['standard', 'critical'] as const
 const RELACION_TIPOS = ['se_ejecuta_en', 'contiene', 'instancia_de', 'depende_de', 'llama_a', 'secret_share', 'conectado_a'] as const
 const ASIGNABLES = ['antigravity', 'claude', 'jarvis', 'david'] as const
 const PRIORIDADES = ['critica', 'alta', 'media', 'baja'] as const
@@ -25,6 +25,18 @@ const NIVELES_CONFIRMACION = ['N1', 'N2', 'N3'] as const
 const ACTORES = ['antigravity', 'claude', 'jarvis'] as const
 const TITULARES_LEASE = ['antigravity', 'claude', 'jarvis'] as const
 const LISTAS = ['ideas'] as const
+
+const TIPO_DESC = 'pilar = Jarvis/Antigravity/Claude como conceptos; servicio_externo = APIs/servicios de terceros; componente_codigo = clase/modulo/script concreto; repositorio, base_datos, workflow, documento, persona, bloqueador, herramienta segun su nombre'
+const NODO_CAMPOS_PROPS = {
+  nombre: { type: 'string', description: 'unico, identifica el nodo' },
+  descripcion: { type: 'string', description: 'que es y para que sirve; mejora mucho la deteccion de duplicados' },
+  autor: { type: 'string' },
+  origen: { type: 'string', description: 'de donde sale: repo y ruta, URL, o "David lo dijo"' },
+  identificador: { type: 'string', description: 'clave externa unica (URL del repo, nombre del Worker, Id de Salesforce); si coincide con la de otro nodo es el mismo' },
+  alias: { type: 'array', items: { type: 'string' }, maxItems: 20, description: 'otros nombres con los que se conoce' },
+  estado: { type: 'string', enum: ['activo', 'deprecado', 'bloqueado'] },
+  data: { type: 'object', description: 'JSON libre con los campos del nodo (max 8 KB): endpoints, tablas, campos, versiones...', additionalProperties: true },
+} as const
 
 export const TOOLS: ToolDef[] = [
   {
@@ -139,16 +151,14 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'nodo_crear',
     description:
-      'Da de alta un nodo del grafo de infraestructura: un sistema, servicio, credencial logica o dispositivo nuevo y duradero (no un experimento de un dia). Clasifica el nombre contra los nodos existentes antes de escribir: si ya existe uno casi identico devuelve ese id sin duplicar (duplicado:true); si hay un parecido ambiguo, responde 409 con candidatos en vez de crear - usa forzar:true solo cuando ya comprobaste que es un nodo realmente distinto.',
+      'Da de alta UN nodo del grafo (sistema, servicio, repo, credencial logica, dispositivo...). Clasifica antes de escribir por nombre, alias, identificador, tipo y descripcion: si ya existe uno casi identico devuelve su id sin duplicar (duplicado:true); si hay un parecido ambiguo, responde 409 con candidatos - usa forzar:true solo tras comprobar que es distinto. Para varios nodos usa nodo_lote (mucho mas rapido).',
     inputSchema: {
       type: 'object',
       properties: {
-        nombre: { type: 'string', description: 'unico, identifica el nodo' },
-        tipo: { type: 'string', enum: NODO_TIPOS, description: 'pilar = Jarvis/Antigravity/Claude como conceptos; servicio_externo = APIs de terceros; componente_codigo = solo si hace falta granularidad de clase/modulo concreto' },
-        descripcion: { type: 'string' },
+        ...NODO_CAMPOS_PROPS,
+        tipo: { type: 'string', enum: NODO_TIPOS, description: TIPO_DESC },
         tier: { type: 'string', enum: NODO_TIERS, default: 'standard', description: 'critical = si este nodo falla o cambia, el impacto se considera severo por defecto en analizar_impacto' },
-        autor: { type: 'string' },
-        forzar: { type: 'boolean', description: 'true = crear igualmente aunque el clasificador detecte un posible duplicado (409). Usalo solo tras revisar los candidatos devueltos y confirmar que es distinto.' },
+        forzar: { type: 'boolean', description: 'true = crear igualmente aunque el clasificador detecte un posible duplicado (409). Usalo solo tras revisar los candidatos devueltos.' },
       },
       required: ['nombre', 'tipo'],
       additionalProperties: false,
@@ -157,14 +167,68 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'nodo_clasificar',
     description:
-      'Preview de solo lectura: compara un nombre de nodo (candidato a crear) contra los nodos existentes y devuelve decision (existe_exacto|posible_duplicado|nuevo) mas hasta 5 candidatos puntuados por similitud. No escribe nada. Llamala cuando tengas dudas antes de nodo_crear, o para inspeccionar por que este devolvio 409.',
+      'Solo lectura. Compara un nodo candidato (cuantos mas campos mandes, mejor: tipo, descripcion, alias, identificador, origen) contra los existentes y devuelve decision (existe_exacto|posible_duplicado|nuevo) con candidatos y motivo. Si es nuevo, devuelve ademas `sugerido`: tipo, tecnologia, tema, padre y descripcion inferidos, cada uno con confianza y motivo. ia:true anade descripcion/tema con Workers AI. No escribe nada.',
     inputSchema: {
       type: 'object',
       properties: {
-        nombre: { type: 'string', description: 'nombre candidato a evaluar, tal cual se usaria en nodo_crear' },
-        tipo: { type: 'string', enum: NODO_TIPOS, description: 'opcional; si se indica, solo compara contra nodos del mismo tipo' },
+        ...NODO_CAMPOS_PROPS,
+        tipo: { type: 'string', enum: NODO_TIPOS, description: 'opcional; si se indica se usa para afinar la comparacion (tipo distinto penaliza el parecido)' },
+        ia: { type: 'boolean', description: 'true = completar descripcion/tema con IA (mas lento)' },
       },
       required: ['nombre'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'nodo_lote',
+    description:
+      'Carga masiva de nodos (y relaciones) en UNA llamada: hasta 100 items y 300 relaciones. Cada item se clasifica (existe/duplicado/nuevo) y los NUEVOS se insertan solos completando tipo, tema, tecnologia y relacion con su padre cuando hay confianza. modo:"simular" (por defecto) no escribe nada y devuelve que haria; modo:"aplicar" escribe. Duplicados posibles quedan como pendiente, los que no se pueden tipar como incompleto, tier critical siempre pendiente salvo forzar. Reenviar el mismo lote_id es idempotente. Relaciones por nombre o id, se crean en segunda pasada. Deshacer: DELETE /nodos/lote/:lote_id. Registra el resultado con registro_escribir.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        modo: { type: 'string', enum: ['simular', 'aplicar'], default: 'simular' },
+        lote_id: { type: 'string', description: 'identificador del lote (para idempotencia y deshacer); si falta se genera' },
+        ia: { type: 'boolean', default: false, description: 'completar descripcion/tema de los nuevos con Workers AI (max 25 por llamada)' },
+        actualizar: { type: 'boolean', default: false, description: 'si un item ya existe, fusionar alias, data y campos vacios en vez de ignorarlo' },
+        sugerencias: { type: 'boolean', default: true, description: 'crear automaticamente la relacion con el padre inferido (confianza >= 0.75)' },
+        autor: { type: 'string' },
+        origen: { type: 'string', description: 'origen por defecto de los items (repo/ruta/URL/quien lo dijo)' },
+        items: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 100,
+          items: {
+            type: 'object',
+            properties: {
+              ...NODO_CAMPOS_PROPS,
+              id: { type: 'string' },
+              tipo: { type: 'string', enum: NODO_TIPOS, description: 'opcional: si falta se infiere' },
+              tier: { type: 'string', enum: NODO_TIERS },
+              forzar: { type: 'boolean' },
+            },
+            required: ['nombre'],
+            additionalProperties: false,
+          },
+        },
+        relaciones: {
+          type: 'array',
+          maxItems: 300,
+          items: {
+            type: 'object',
+            properties: {
+              origen: { type: 'string', description: 'nombre, alias o id' },
+              destino: { type: 'string', description: 'nombre, alias o id' },
+              tipo: { type: 'string', enum: RELACION_TIPOS },
+              descripcion: { type: 'string' },
+              confianza: { type: 'string', enum: CONFIANZAS },
+              is_blocking: { type: 'boolean', default: true },
+            },
+            required: ['origen', 'destino', 'tipo'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['items'],
       additionalProperties: false,
     },
   },
