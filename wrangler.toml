@@ -1,0 +1,11 @@
+name = "jarvis-nucleo"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "jarvis-nucleo"
+database_id = "36b1e538-2f1a-48aa-b6a4-76183b6e3052"
+
+[triggers]
+crons = ["30 6 * * *", "0 20 * * *", "0 22 * * *"]

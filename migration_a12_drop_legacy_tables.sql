@@ -1,0 +1,22 @@
+-- ============================================================================
+-- migration_a12_drop_legacy_tables.sql — Tarea [A12-DECOMMISSIONING-D1]
+-- Retira la tabla legacy "memoria" de circulacion tras confirmar que:
+--   1) migration_a12_migrate_legacy_memoria.sql ya se aplico (todas sus filas
+--      viven ahora en memory_items/memory_observations/memory_item_tags), y
+--   2) ningun endpoint del worker lee ni escribe ya en "memoria"
+--      (src/routes/memoria.ts y src/routes/resumen.ts actualizados en esta
+--      misma tarea).
+--
+-- Se opta por RENAME en vez de DROP: mismo efecto de decommissioning (la
+-- app deja de verla, "memoria" desaparece del schema activo) pero preserva
+-- los datos para auditoria, igual que el resto de "archivado sin destruir
+-- historial" del proyecto (AGENTS.md seccion 6.7). Si se prefiere borrado
+-- definitivo, sustituir la sentencia de abajo por:
+--   DROP TABLE IF EXISTS memoria;
+--
+-- NO aplicado automaticamente por Claude (despliegue = Antigravity, AGENTS.md
+-- 1.1). Aplicar SOLO despues de migration_a12_migrate_legacy_memoria.sql, con:
+--   wrangler d1 execute jarvis-nucleo --remote --file=migration_a12_drop_legacy_tables.sql
+-- ============================================================================
+
+ALTER TABLE memoria RENAME TO memoria_legacy_backup;
