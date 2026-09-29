@@ -69,6 +69,7 @@ const HANDLERS: Record<string, (args: any, env: Env) => Promise<{ status: number
   nodo_crear: (a, env) =>
     callApp(nodos, '/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(a) }, env),
   nodo_listar: (a, env) => callApp(nodos, qs({ tipo: a.tipo }), {}, env),
+  nodo_clasificar: (a, env) => callApp(nodos, `/clasificar${qs({ nombre: a.nombre, tipo: a.tipo })}`, {}, env),
 
   relacion_crear: (a, env) =>
     callApp(relaciones, '/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(a) }, env),

@@ -138,7 +138,8 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'nodo_crear',
-    description: 'Da de alta un nodo del grafo de infraestructura: un sistema, servicio, credencial logica o dispositivo nuevo y duradero (no un experimento de un dia).',
+    description:
+      'Da de alta un nodo del grafo de infraestructura: un sistema, servicio, credencial logica o dispositivo nuevo y duradero (no un experimento de un dia). Clasifica el nombre contra los nodos existentes antes de escribir: si ya existe uno casi identico devuelve ese id sin duplicar (duplicado:true); si hay un parecido ambiguo, responde 409 con candidatos en vez de crear - usa forzar:true solo cuando ya comprobaste que es un nodo realmente distinto.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -147,8 +148,23 @@ export const TOOLS: ToolDef[] = [
         descripcion: { type: 'string' },
         tier: { type: 'string', enum: NODO_TIERS, default: 'standard', description: 'critical = si este nodo falla o cambia, el impacto se considera severo por defecto en analizar_impacto' },
         autor: { type: 'string' },
+        forzar: { type: 'boolean', description: 'true = crear igualmente aunque el clasificador detecte un posible duplicado (409). Usalo solo tras revisar los candidatos devueltos y confirmar que es distinto.' },
       },
       required: ['nombre', 'tipo'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'nodo_clasificar',
+    description:
+      'Preview de solo lectura: compara un nombre de nodo (candidato a crear) contra los nodos existentes y devuelve decision (existe_exacto|posible_duplicado|nuevo) mas hasta 5 candidatos puntuados por similitud. No escribe nada. Llamala cuando tengas dudas antes de nodo_crear, o para inspeccionar por que este devolvio 409.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        nombre: { type: 'string', description: 'nombre candidato a evaluar, tal cual se usaria en nodo_crear' },
+        tipo: { type: 'string', enum: NODO_TIPOS, description: 'opcional; si se indica, solo compara contra nodos del mismo tipo' },
+      },
+      required: ['nombre'],
       additionalProperties: false,
     },
   },
