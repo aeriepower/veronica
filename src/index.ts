@@ -11,6 +11,7 @@
 // Ver contrato-mcp-veronica.md (proyecto "Automatizacion Whatsapp").
 import { Hono } from 'hono'
 import relaciones from './routes/relaciones'
+import grafo from './routes/grafo'
 import memoria from './routes/memoria'
 import nodos from './routes/nodos'
 import objetivos from './routes/objetivos'
@@ -71,6 +72,9 @@ app.route('/nodos', nodos)
 
 // ---------- RELACIONES (modular, incluye blast radius) ----------
 app.route('/relaciones', relaciones)
+
+// ---------- GRAFO VIVO (planificar_cambio, puente memoria<->nodos, propuestas) ----------
+app.route('/grafo', grafo)
 
 // ---------- OBJETIVOS (modular: idempotencia, prioridad, resultado) ----------
 app.route('/objetivos', objetivos)

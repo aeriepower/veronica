@@ -69,7 +69,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memoria_recordar',
-    description: 'Guarda una observacion nueva en memoria. Llamala sin que David lo pida cuando cuente algo duradero (un hecho, una preferencia, un procedimiento).',
+    description: 'Guarda una observacion nueva en memoria. Llamala sin que David lo pida cuando cuente algo duradero (un hecho, una preferencia, un procedimiento). Tras guardar, Veronica detecta los nodos del grafo de los que habla (enlaces nodo_memoria) y, si el texto lo dice explicitamente y el origen es fiable, crea relaciones; lo dudoso o los nodos nuevos quedan como propuesta (propuesta_listar). Las observaciones enlazadas a un nodo no caducan en la curacion nocturna.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -80,6 +80,7 @@ export const TOOLS: ToolDef[] = [
         confianza: { type: 'string', enum: CONFIANZAS, description: 'alta cuando origen=david; baja/media cuando el agente infiere' },
         autor: { type: 'string', enum: AUTORES },
         etiquetas: { type: 'array', items: { type: 'string', enum: ETIQUETAS }, description: "al menos una; usa 'personal' para gustos o preferencias de David sin proyecto asociado" },
+        nodos: { type: 'array', items: { type: 'string' }, maxItems: 20, description: 'opcional: nombres, alias o ids de los nodos del grafo a los que se refiere la observacion. Aunque lo omitas, Veronica detecta por el texto los nodos mencionados y enlaza sola; usalo cuando sepas con certeza de que nodo trata.' },
       },
       required: ['texto', 'capa', 'origen', 'autor', 'etiquetas'],
       additionalProperties: false,
@@ -98,6 +99,7 @@ export const TOOLS: ToolDef[] = [
         confianza: { type: 'string', enum: CONFIANZAS },
         autor: { type: 'string', enum: AUTORES },
         etiquetas: { type: 'array', items: { type: 'string', enum: ETIQUETAS } },
+        nodos: { type: 'array', items: { type: 'string' }, maxItems: 20, description: 'opcional: nombres, alias o ids de los nodos del grafo a los que se refiere la observacion. Aunque lo omitas, Veronica detecta por el texto los nodos mencionados y enlaza sola; usalo cuando sepas con certeza de que nodo trata.' },
       },
       required: ['id', 'texto', 'capa'],
       additionalProperties: false,
@@ -119,7 +121,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memoria_curar',
-    description: 'Lanza bajo demanda la curacion nocturna (normalmente corre por cron): archiva observaciones episodicas de mas de 30 dias. Solo llamar manualmente si hace falta forzarla fuera de horario.',
+    description: 'Lanza bajo demanda la curacion nocturna (normalmente corre por cron): archiva observaciones episodicas de mas de 30 dias (salvo las enlazadas a algun nodo). Solo llamar manualmente si hace falta forzarla fuera de horario.',
     inputSchema: { type: 'object', properties: { autor: { type: 'string', enum: ACTORES } }, additionalProperties: false },
   },
   {
@@ -275,8 +277,159 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'analizar_impacto',
     description:
-      'Blast radius: quien se rompe si este nodo cambia o falla. Llamala SIEMPRE antes de una accion de riesgo medio/alto/irreversible sobre un nodo existente. Devuelve un veredicto que puede bloquear la accion hasta que David confirme (confirmacion_crear).',
+      'Blast radius: quien se rompe si este nodo cambia o falla. Llamala SIEMPRE antes de una accion de riesgo medio/alto/irreversible sobre un nodo existente. Devuelve un veredicto que puede bloquear la accion hasta que David confirme (confirmacion_crear). Cada nodo afectado sale UNA vez, con distancia y relevancia; para planificar un desarrollo completo usa planificar_cambio, que ademas agrupa por accion e incluye recuerdos.',
     inputSchema: { type: 'object', properties: { nodo: { type: 'string', description: 'id del nodo sobre el que se va a actuar' } }, required: ['nodo'], additionalProperties: false },
+  },
+  {
+    name: 'planificar_cambio',
+    description:
+      'MAPA MENTAL antes de actuar: dada una tarea (texto libre) y/o nodos, devuelve TODO lo que hay que tocar, agrupado por accion: tocar (codigo/config), desplegar (instancias y maquinas donde vive), verificar (quien depende o llama), docs, riesgos (credenciales, bloqueadores) y dudoso (baja relevancia). Cada elemento trae relevancia 0-1 y el camino que lo justifica. Incluye tambien contexto: recuerdos de memoria enlazados a esos nodos (por que se hizo, con que planteamiento, que cambios). Si algun nodo critico queda afectado el veredicto es REQUIERE_CONFIRMACION. El orquestador debe llamarla ANTES de mandar cualquier desarrollo a otro pilar y pasar el resultado en el encargo. Al terminar, llama a plan_cerrar con el plan_id.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tarea: { type: 'string', description: 'que se va a hacer, en lenguaje natural; se detectan los nodos por sus nombres y alias' },
+        nodos: { type: 'array', items: { type: 'string' }, maxItems: 20, description: 'opcional: nodos de partida (nombre, alias o id) si ya sabes de cuales trata' },
+        autor: { type: 'string', enum: AUTORES },
+        profundidad: { type: 'integer', minimum: 1, maximum: 8, default: 5, description: 'saltos maximos desde los nodos de partida' },
+        umbral: { type: 'number', minimum: 0.05, maximum: 0.9, default: 0.25, description: 'relevancia minima para incluir un nodo; sube el valor para un plan mas corto' },
+        contexto: { type: 'boolean', default: true, description: 'incluir recuerdos de memoria enlazados' },
+        detalle: { type: 'boolean', default: false, description: 'true = anade distancia y tier a cada elemento' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'plan_cerrar',
+    description:
+      'Cierra un plan de planificar_cambio indicando que nodos se tocaron de verdad. Veronica compara con lo previsto, devuelve aciertos, lo que el mapa no preveia (faltaron) y lo previsto que no hizo falta (sobraron), y guarda como propuesta las relaciones que faltaban para que el mapa mejore con el uso.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        plan_id: { type: 'string', description: 'plan_id devuelto por planificar_cambio' },
+        tocados: { type: 'array', items: { type: 'string' }, maxItems: 100, description: 'nodos realmente modificados o desplegados (nombre, alias o id)' },
+        autor: { type: 'string', enum: AUTORES },
+        notas: { type: 'string', description: 'opcional: que se aprendio' },
+      },
+      required: ['plan_id', 'tocados'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'grafo_exportar',
+    description: 'Exporta el grafo completo por paginas (nodos o relaciones). Para visores, copias o analisis. Sigue el campo siguiente hasta que sea null.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        parte: { type: 'string', enum: ['nodos', 'relaciones'], default: 'nodos' },
+        desde: { type: 'integer', minimum: 0, default: 0, description: 'desplazamiento (usa el valor de siguiente de la pagina anterior)' },
+        limite: { type: 'integer', minimum: 1, maximum: 500, default: 200 },
+        descripciones: { type: 'boolean', default: false, description: 'incluir las 160 primeras letras de la descripcion de cada nodo' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'relacion_lote',
+    description:
+      'Crea relaciones en masa (hasta 300) resolviendo origen/destino por nombre, alias o id. modo=simular no escribe; modo=aplicar escribe. Idempotente: lo que ya existe sale como ya_existe. Se deshace con DELETE /nodos/lote/<lote_id>?confirmar=true.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        lote_id: { type: 'string', maxLength: 64, description: 'identificador del lote (para deshacer y auditar)' },
+        modo: { type: 'string', enum: ['simular', 'aplicar'], default: 'simular' },
+        autor: { type: 'string' },
+        relaciones: {
+          type: 'array', minItems: 1, maxItems: 300,
+          items: {
+            type: 'object',
+            properties: {
+              origen: { type: 'string', description: 'nombre, alias o id. Convencion: "origen TIPO destino" (A depende_de B, A se_ejecuta_en B, A contiene B)' },
+              destino: { type: 'string' },
+              tipo: { type: 'string', enum: RELACION_TIPOS },
+              descripcion: { type: 'string' },
+              confianza: { type: 'string', enum: CONFIANZAS, default: 'media' },
+              is_blocking: { type: 'boolean', default: true, description: 'true = si el destino cae, el origen deja de funcionar' },
+            },
+            required: ['origen', 'destino', 'tipo'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['relaciones'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'memoria_por_nodo',
+    description: 'Recuerdos de memoria enlazados a un nodo (por que se hizo, planteamiento, cambios), ordenados por utilidad (fuerza del enlace, capa, confianza, recencia). Con vecinos=true incluye tambien los de los nodos directamente relacionados.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        nodo: { type: 'string', description: 'nombre, alias o id del nodo' },
+        vecinos: { type: 'boolean', default: false },
+        max: { type: 'integer', minimum: 1, maximum: 30, default: 10 },
+      },
+      required: ['nodo'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'memoria_enlazar_lote',
+    description:
+      'Enlaza observaciones de memoria con nodos en masa. Dos usos: (1) enlaces:[{nodo, observacion, tipo, fuerza}] manuales; (2) auto:true reprocesa observaciones existentes con las reglas del extractor (paginado con desde/limite; sigue siguiente hasta null). modo=simular no escribe. Con ia:true el extractor tambien propone nodos nuevos (solo como propuesta).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        modo: { type: 'string', enum: ['simular', 'aplicar'], default: 'simular' },
+        auto: { type: 'boolean', default: false },
+        ia: { type: 'boolean', default: false },
+        desde: { type: 'integer', minimum: 0, default: 0 },
+        limite: { type: 'integer', minimum: 1, maximum: 200, default: 100 },
+        incluir_archivadas: { type: 'boolean', default: false },
+        enlaces: {
+          type: 'array', maxItems: 300,
+          items: {
+            type: 'object',
+            properties: {
+              nodo: { type: 'string', description: 'nombre, alias o id' },
+              observacion: { type: 'string', description: 'id de la observacion (memoria_listar / memoria_buscar)' },
+              tipo: { type: 'string', enum: ['sobre', 'menciona'], default: 'menciona', description: 'sobre = la observacion trata de ese nodo; menciona = lo cita' },
+              fuerza: { type: 'number', minimum: 0, maximum: 1, default: 0.8 },
+            },
+            required: ['nodo', 'observacion'],
+            additionalProperties: false,
+          },
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'propuesta_listar',
+    description: 'Lista las propuestas del extractor (nodos o relaciones nuevas detectadas en memoria o en planes cerrados) pendientes de revisar, con su evidencia y confianza.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        estado: { type: 'string', enum: ['pendiente', 'aprobada', 'rechazada'], default: 'pendiente' },
+        clase: { type: 'string', enum: ['nodo', 'relacion'] },
+        limite: { type: 'integer', minimum: 1, maximum: 100, default: 30 },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'propuesta_resolver',
+    description: 'Aprueba (crea el nodo o la relacion) o rechaza propuestas del extractor, en lote. Aprobar un nodo pasa antes por el clasificador: si ya existe algo parecido no se duplica.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 100 },
+        decision: { type: 'string', enum: ['aprobar', 'rechazar'] },
+        quien: { type: 'string', enum: AUTORES },
+      },
+      required: ['ids', 'decision', 'quien'],
+      additionalProperties: false,
+    },
   },
   {
     name: 'objetivo_crear',

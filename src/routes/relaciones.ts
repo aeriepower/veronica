@@ -5,6 +5,8 @@
 import { Hono } from 'hono'
 import type { Env } from '../types'
 import { CrearRelacionSchema, RELACION_TIPOS } from '../types/relaciones'
+import { cargarGrafo } from '../services/memoria_grafo'
+import { planificar, severidad } from '../services/planificador'
 
 function id(prefijo: string): string {
   return prefijo + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
@@ -14,19 +16,7 @@ function ahora(): string {
   return new Date().toISOString()
 }
 
-const SEVERIDAD_ORDEN = ['CRITICAL_BLOCKING', 'BLOCKING', 'CRITICAL_DEGRADABLE', 'DEGRADABLE', 'NONE'] as const
-type Severidad = (typeof SEVERIDAD_ORDEN)[number]
-
-type FilaImpacto = {
-  nodo_id: string
-  nombre: string
-  tipo: string
-  tier: string
-  distancia: number
-  ruta: string
-  es_bloqueante_acumulado: number
-  severidad: Severidad
-}
+type Severidad = 'CRITICAL_BLOCKING' | 'BLOCKING' | 'CRITICAL_DEGRADABLE' | 'DEGRADABLE' | 'NONE'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -81,58 +71,32 @@ app.get('/impacto', async (c) => {
     return c.json({ error: `nodo '${nodoId}' no encontrado` }, 404)
   }
 
-  const q = await db.prepare(`
-    WITH RECURSIVE blast_radius(nodo_id, nombre, tipo, tier, ruta, distancia, es_bloqueante_acumulado) AS (
-      SELECT n.id, n.nombre, n.tipo, n.tier, n.id, 0, 1
-      FROM nodos n
-      WHERE n.id = ?1
+  // [D1-MEMORIA-GRAFO] Motor unico (services/planificador.ts): recorrido con
+  // reglas por tipo y sentido de relacion, cada nodo UNA vez (antes: una fila
+  // por camino, 1190 filas para 44 nodos) y sin cruzar hubs ni personas.
+  const g = await cargarGrafo(db)
+  const plan = planificar(g, [nodoId], { profundidad: 6, umbral: 0.2 })
+  const ORDEN_SEV: Severidad[] = ['CRITICAL_BLOCKING', 'BLOCKING', 'CRITICAL_DEGRADABLE', 'DEGRADABLE']
+  const filas = plan.items
+    .map((i) => ({ i, sev: severidad(i) as Severidad }))
+    .sort((x, y) => ORDEN_SEV.indexOf(x.sev) - ORDEN_SEV.indexOf(y.sev) || y.i.relevancia - x.i.relevancia)
+  const TOPE = 60
 
-      UNION ALL
-
-      SELECT n.id, n.nombre, n.tipo, n.tier,
-             br.ruta || ' -> ' || n.id,
-             br.distancia + 1,
-             (br.es_bloqueante_acumulado AND r.is_blocking)
-      FROM blast_radius br
-      JOIN relaciones r ON r.destino = br.nodo_id
-      JOIN nodos n ON n.id = r.origen
-      WHERE br.ruta NOT LIKE '%' || n.id || '%'
-        AND br.distancia < 6
-    )
-    SELECT
-      nodo_id, nombre, tipo, tier, distancia, ruta, es_bloqueante_acumulado,
-      CASE
-        WHEN es_bloqueante_acumulado = 1 AND tier = 'critical' THEN 'CRITICAL_BLOCKING'
-        WHEN es_bloqueante_acumulado = 1 THEN 'BLOCKING'
-        WHEN tier = 'critical' THEN 'CRITICAL_DEGRADABLE'
-        ELSE 'DEGRADABLE'
-      END AS severidad
-    FROM blast_radius
-    WHERE distancia > 0
-    ORDER BY
-      CASE WHEN es_bloqueante_acumulado = 1 AND tier = 'critical' THEN 0
-           WHEN es_bloqueante_acumulado = 1 THEN 1
-           WHEN tier = 'critical' THEN 2 ELSE 3 END,
-      distancia ASC
-  `).bind(nodoId).all<FilaImpacto>()
-
-  const filas = q.results
-
-  const impactChain = filas.map((f) => ({
-    node_id: f.nodo_id,
-    nombre: f.nombre,
-    tipo: f.tipo,
-    distancia: f.distancia,
-    path: f.ruta,
-    is_blocking: !!f.es_bloqueante_acumulado,
-    severity: f.severidad,
+  const impactChain = filas.slice(0, TOPE).map(({ i, sev }) => ({
+    node_id: i.id,
+    nombre: i.nombre,
+    tipo: i.tipo,
+    distancia: i.distancia,
+    relevancia: i.relevancia,
+    rol: i.rol,
+    path: i.via,
+    is_blocking: i.bloqueante,
+    severity: sev,
   }))
 
-  const maxSeverity: Severidad = filas.length
-    ? SEVERIDAD_ORDEN.find((s) => filas.some((f) => f.severidad === s)) || 'NONE'
-    : 'NONE'
+  const maxSeverity: Severidad = filas.length ? ORDEN_SEV.find((s) => filas.some((f) => f.sev === s)) || 'NONE' : 'NONE'
 
-  const criticalNodesImpacted = filas.filter((f) => f.tier === 'critical').map((f) => f.nodo_id)
+  const criticalNodesImpacted = filas.filter((f) => f.i.tier === 'critical').map((f) => f.i.id)
 
   const preFlightVerdict = maxSeverity === 'CRITICAL_BLOCKING' ? 'BLOCKED_REQUIRES_CONFIRMATION' : 'PROCEED'
 
@@ -151,6 +115,7 @@ app.get('/impacto', async (c) => {
     target_node: nodoId,
     blast_radius_summary: {
       total_affected_nodes: filas.length,
+      mostrados: impactChain.length,
       max_severity: maxSeverity,
       critical_nodes_impacted: criticalNodesImpacted,
     },

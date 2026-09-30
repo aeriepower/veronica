@@ -17,6 +17,7 @@ import {
   ETIQUETAS_VALIDAS,
 } from '../types/memoria'
 import { ejecutarCuracionNocturna, type TitularCuracion } from '../services/curacion'
+import { procesarObservacionPorId, enlazarExplicito } from '../services/memoria_grafo'
 
 function id(prefijo: string): string {
   return prefijo + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
@@ -49,6 +50,17 @@ function sanitizarFts5(termino: string): string {
     .filter(Boolean)
     .map((t) => `"${t.replace(/"/g, '""')}"`)
     .join(' ')
+}
+
+// Ejecuta trabajo posterior al guardado sin bloquear la respuesta. Si no hay
+// ExecutionContext (tests, app.request sin ctx) espera a que termine; el
+// extractor nunca lanza, asi que un fallo suyo no afecta al guardado.
+async function despues(c: any, p: Promise<unknown>) {
+  try {
+    c.executionCtx.waitUntil(p)
+  } catch {
+    await p
+  }
 }
 
 const app = new Hono<{ Bindings: Env }>()
@@ -183,7 +195,11 @@ app.post('/', async (c) => {
     ),
   ])
 
-  return c.json({ id: observationId, item_id: itemId })
+  let nodosEnlazados: { enlazados: string[]; sin_resolver: string[] } | undefined
+  if (b.nodos?.length) nodosEnlazados = await enlazarExplicito(c.env, observationId, b.nodos, fecha).catch(() => undefined)
+  await despues(c, procesarObservacionPorId(c.env, observationId, true))
+
+  return c.json({ id: observationId, item_id: itemId, ...(nodosEnlazados ? { nodos: nodosEnlazados } : {}) })
 })
 
 // POST /memoria/corregir
@@ -216,9 +232,19 @@ app.post('/corregir', async (c) => {
       )
       .bind(nuevoId, anterior.item_id, b.capa, b.texto, b.origen, b.confianza, b.autor, b.id, b.revisar || null, fecha),
     db.prepare("UPDATE memory_observations SET estado='archivado', sustituido_por=? WHERE id=?").bind(nuevoId, b.id),
+    // La version corregida hereda los enlaces con nodos de la anterior.
+    db
+      .prepare(
+        "INSERT OR IGNORE INTO nodo_memoria (id, nodo_id, observacion_id, tipo, fuerza, origen, creado) SELECT 'nm_' || hex(randomblob(6)), nodo_id, ?, tipo, fuerza, origen, ? FROM nodo_memoria WHERE observacion_id = ?"
+      )
+      .bind(nuevoId, fecha, b.id),
   ])
 
-  return c.json({ id: nuevoId })
+  let nodosEnlazados: { enlazados: string[]; sin_resolver: string[] } | undefined
+  if (b.nodos?.length) nodosEnlazados = await enlazarExplicito(c.env, nuevoId, b.nodos, fecha).catch(() => undefined)
+  await despues(c, procesarObservacionPorId(c.env, nuevoId, true))
+
+  return c.json({ id: nuevoId, ...(nodosEnlazados ? { nodos: nodosEnlazados } : {}) })
 })
 
 // POST /memoria/olvidar

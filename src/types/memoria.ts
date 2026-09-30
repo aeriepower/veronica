@@ -48,6 +48,8 @@ const camposBase = {
   autor: z.enum(AUTORES).default('jarvis'),
   etiquetas: etiquetasSchema,
   revisar: z.string().optional(),
+  // Nodos del grafo a los que se enlaza la observacion (nombres, alias o ids).
+  nodos: z.array(z.string().min(1)).max(20).optional(),
 }
 
 function refinarCapaYTexto(v: { capa?: string; memory_type?: string; texto?: string; object_text?: string }, ctx: z.RefinementCtx) {
@@ -71,6 +73,7 @@ function canonizar<T extends { nombre?: string; subject_key?: string; capa?: str
     autor: (v as unknown as { autor: (typeof AUTORES)[number] }).autor,
     etiquetas: (v as unknown as { etiquetas: (typeof ETIQUETAS_VALIDAS)[number][] }).etiquetas,
     revisar: (v as unknown as { revisar?: string }).revisar,
+    nodos: (v as unknown as { nodos?: string[] }).nodos,
   }
 }
 
