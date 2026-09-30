@@ -4,7 +4,7 @@
 // se escribe. Todo el procesado es best-effort: NUNCA debe hacer fallar el
 // guardado de una memoria.
 import type { Env } from '../types'
-import { cargarIndice, clasificarContraIndice, normalizarNombre, type Indice } from './clasificador'
+import { cargarIndice, clasificarContraIndice, normalizarNombre, nuevoNodoIndice, type Indice } from './clasificador'
 import { analizarTexto, extraerIA, construirClaves, type Analisis } from './extraccion'
 import { construirGrafo, type Grafo } from './planificador'
 
@@ -46,11 +46,19 @@ export type ResultadoProceso = {
   enlaces: number
   relaciones_aplicadas: number
   propuestas: number
+  nodos_creados?: number
 }
 
 export type OpcionesProceso = { aplicar?: boolean; ia?: boolean; lote?: string }
 
 // Puede una relacion extraida por reglas aplicarse sin revision?
+// Nodo nuevo detectado por IA: se inserta solo si la memoria es de David o de confianza alta
+// y el nombre es concreto (>=4 chars, max 80); si no, queda como propuesta.
+export function nodoAutoaplicable(o: Pick<ObsFila, 'origen' | 'confianza'>, nombre: string): boolean {
+  const n = nombre.trim()
+  return n.length >= 4 && n.length <= 80 && (o.origen === 'david' || o.confianza === 'alta')
+}
+
 export function relacionAutoaplicable(o: Pick<ObsFila, 'origen' | 'confianza'>, confRel: number): boolean {
   return confRel >= 0.75 && (o.origen === 'david' || o.confianza === 'alta')
 }
@@ -104,8 +112,21 @@ export async function procesarObservacion(env: Env, o: ObsFila, ix: Indice, op: 
           res.enlaces++
           if (aplicar) stmts.push(db.prepare("INSERT OR IGNORE INTO nodo_memoria (id, nodo_id, observacion_id, tipo, fuerza, origen, creado) VALUES (?,?,?,'menciona',0.6,'ia',?)").bind(nuevoId('nm'), cl.candidatos[0].id, o.id, t))
         } else if (cl.decision === 'nuevo') {
-          res.propuestas++
-          if (aplicar) stmts.push(stmtPropuesta(db, 'nodo', `nodo:${normalizarNombre(e.nombre)}`, { nombre: e.nombre, tipo: e.tipo }, o.id, e.evidencia, 0.5, 'ia', t))
+          if (nodoAutoaplicable(o, e.nombre)) {
+            // Memoria de David / confianza alta: el nodo nuevo se crea solo (lote memoria-auto, reversible).
+            res.nodos_creados = (res.nodos_creados || 0) + 1
+            const nid = nuevoId('n')
+            ix.nodos.push(nuevoNodoIndice({ id: nid, nombre: e.nombre, tipo: e.tipo }))
+            const nn = ix.nodos[ix.nodos.length - 1]
+            ix.porId.set(nid, nn); ix.porNombre.set(normalizarNombre(e.nombre), nn)
+            if (aplicar) {
+              stmts.push(db.prepare("INSERT OR IGNORE INTO nodos (id, nombre, tipo, descripcion, tier, creado, autor, origen, estado, lote) VALUES (?,?,?,?, 'standard', ?, 'extractor', ?, 'activo', ?)").bind(nid, e.nombre, e.tipo, e.evidencia || null, t, `memoria ${o.id}`, op.lote || LOTE_AUTO))
+              stmts.push(db.prepare("INSERT OR IGNORE INTO nodo_memoria (id, nodo_id, observacion_id, tipo, fuerza, origen, creado) VALUES (?,?,?,'sobre',0.8,'ia',?)").bind(nuevoId('nm'), nid, o.id, t))
+            }
+          } else {
+            res.propuestas++
+            if (aplicar) stmts.push(stmtPropuesta(db, 'nodo', `nodo:${normalizarNombre(e.nombre)}`, { nombre: e.nombre, tipo: e.tipo }, o.id, e.evidencia, 0.5, 'ia', t))
+          }
         }
       }
       for (const r of g.relaciones) {
