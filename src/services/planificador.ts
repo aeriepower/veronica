@@ -168,7 +168,12 @@ export function planificar(g: Grafo, semillasIds: string[], op: Opciones = {}): 
 
 // Severidad al estilo analizar_impacto (compatibilidad con el contrato v1).
 export type Severidad = 'CRITICAL_BLOCKING' | 'BLOCKING' | 'CRITICAL_DEGRADABLE' | 'DEGRADABLE' | 'NONE'
+// Solo cuenta como "se rompe" lo que el cambio realmente alcanza (relevancia >= 0.5).
+// Los nodos alcanzados por una relacion de solo referencia (p. ej. el destino de un
+// llama_a al recorrer hacia delante, peso 0.3) no bloquean nada: se degradan como mucho.
+export const UMBRAL_ROTURA = 0.5
 export function severidad(i: ItemPlan): Severidad {
+  if (i.relevancia < UMBRAL_ROTURA) return i.tier === 'critical' ? 'CRITICAL_DEGRADABLE' : 'DEGRADABLE'
   if (i.bloqueante && i.tier === 'critical') return 'CRITICAL_BLOCKING'
   if (i.bloqueante) return 'BLOCKING'
   if (i.tier === 'critical') return 'CRITICAL_DEGRADABLE'

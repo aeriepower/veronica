@@ -61,7 +61,10 @@ const pn = planificar(g, ['nucleo'])
 const sn = pn.items.find((i) => i.id === 'server')!
 assert.equal(severidad(sn), 'BLOCKING')
 const ps = planificar(g, ['server'])
-assert.equal(severidad(ps.items.find((i) => i.id === 'nucleo')!), 'CRITICAL_BLOCKING' /* cadena bloqueante hasta un nodo critical */)
+// desde server, nucleo es solo referencia (peso 0.3): no bloquea
+assert.equal(severidad(ps.items.find((i) => i.id === 'nucleo')!), 'CRITICAL_DEGRADABLE')
+// desde nucleo (critical), server depende de el: si cae, se rompe
+assert.equal(severidad(planificar(g, ['nucleo']).items.find((i) => i.id === 'server')!), 'BLOCKING')
 
 // umbral: mas alto = plan mas corto
 assert.ok(planificar(g, ['server'], { umbral: 0.7 }).items.length < p.items.length)
